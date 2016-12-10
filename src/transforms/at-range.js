@@ -886,16 +886,16 @@ export function unwrapBlockAtRange(transform, range, properties, options = {}) {
  *   @property {Boolean} normalize
  */
 
-export function unwrapInlineAtRange(transform, range, properties, options = {}) {
+export function unwrapInlineAtRange(transform, range, properties) {
   properties = Normalize.nodeProperties(properties)
 
-  const { normalize = true } = options
-  const { state } = transform
-  const { document } = state
+  let { state } = transform
+  let { document } = state
+  let selectionLength = state.selection.endOffset - state.selection.startOffset
   const texts = document.getTextsAtRange(range)
   const inlines = texts
     .map((text) => {
-      return document.getClosest(text.key, (parent) => {
+      return document.getClosest(text, (parent) => {
         if (parent.kind != 'inline') return false
         if (properties.type != null && parent.type != properties.type) return false
         if (properties.isVoid != null && parent.isVoid != properties.isVoid) return false
@@ -907,19 +907,75 @@ export function unwrapInlineAtRange(transform, range, properties, options = {}) 
     .toOrderedSet()
     .toList()
 
+  let beginning = document.getPreviousSibling(inlines.first())
+  let startOffset = beginning.length;
+
   inlines.forEach((inline) => {
-    const parent = document.getParent(inline.key)
+    const first = inline.nodes.first()
+    const last = inline.nodes.last()
+    const parent = document.getParent(inline)
     const index = parent.nodes.indexOf(inline)
 
-    inline.nodes.forEach((child, i) => {
-      transform.moveNodeByKey(child.key, parent.key, index + i, OPTS)
+    const children = inline.nodes.filter((child) => {
+      return texts.some(t => child == t)
     })
+
+    const firstMatch = children.first()
+    let lastMatch = children.last()
+
+    transform.unsetSelection()
+
+    if (first == firstMatch && last == lastMatch) {
+      inline.nodes.forEach((child, i) => {
+        transform.moveNodeByKey(child.key, parent.key, index + i)
+      })
+
+      transform.removeNodeByKey(inline.key)
+    }
+
+    else if (last == lastMatch) {
+      inline.nodes
+        .skipUntil(n => n == firstMatch)
+        .forEach((child, i) => {
+          transform.moveNodeByKey(child.key, parent.key, index + 1 + i)
+        })
+    }
+
+    else if (first == firstMatch) {
+      inline.nodes
+        .takeUntil(n => n == lastMatch)
+        .push(lastMatch)
+        .forEach((child, i) => {
+          transform.moveNodeByKey(child.key, parent.key, index + i)
+        })
+    }
+
+    else {
+      const offset = inline.getOffset(firstMatch)
+
+      transform.splitNodeByKey(inline.key, offset)
+      state = transform.state
+      document = state.document
+      const extra = document.getPreviousSibling(firstMatch)
+
+      children.forEach((child, i) => {
+        transform.moveNodeByKey(child.key, parent.key, index + 1 + i)
+      })
+
+      transform.removeNodeByKey(extra.key)
+    }
   })
 
-  // TODO: optmize to only normalize the right block
-  if (normalize) {
-    transform.normalizeDocument(SCHEMA)
-  }
+  transform.moveTo(
+    {
+      anchorKey: beginning.key,
+      anchorOffset: startOffset,
+      focusKey: beginning.key,
+      focusOffset: startOffset}
+    )
+    .extendForward(selectionLength)
+  transform.normalizeDocument()
+  return transform
 }
 
 /**
